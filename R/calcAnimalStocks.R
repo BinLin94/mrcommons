@@ -20,13 +20,10 @@ calcAnimalStocks <- function(grouping = "IPCC") {
 
   marketSwineShare <- 0.9 # table 10.19
 
-  # LiveHead and LivePrim were merged into Production_Crops_Livestock in 2024.
-  # Read once; liveHead aggregates over ElementShort, fao retains full structure
-  # for item-element combinations (format: "ItemCodeItem.ElementShort").
-  # Old approach (two separate reads, data up to 2019):
-  # liveHead <- dimSums(readSource("FAO_online", "LiveHead"), dim = "ElementShort")
-  # livePrim <- readSource("FAO_online", "LivePrim")
-  fao      <- readSource("FAO_online", "LiveHead")
+  # FAO merged LiveHead/LivePrim into Production_Crops_Livestock in 2024.
+  # Use LiveHead2024 which reads the new merged file; item names changed to
+  # e.g. "882|Raw milk of cattle" and elements to "Milk_Animals_(An)".
+  fao      <- readSource("FAO_online", "LiveHead2024")
   liveHead <- dimSums(fao, dim = "ElementShort")
 
   # estimate numbers of animals for IPCC categories
