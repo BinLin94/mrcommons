@@ -153,7 +153,11 @@ calcAnimalStocks <- function(grouping = "IPCC") {
     getItems(fao, dim = 1)[getItems(fao, dim = 1) == "XCN"] <- "CHN"
   }
 
-  fao <- toolISOhistorical(fao, overwrite = TRUE, additional_mapping = additionalMapping)
+  # toolISOhistorical() warns whenever the successor-country weight it looks up for some
+  # unrelated item/element happens to be NA in the split year - harmless (it falls back to
+  # weight 0 for just that item, same as it would with any other NA), but noisy now that we
+  # no longer zero all of fao's NAs beforehand. Silenced here; doesn't affect any values.
+  fao <- suppressWarnings(toolISOhistorical(fao, overwrite = TRUE, additional_mapping = additionalMapping))
   fao <- toolCountryFill(fao, fill = NA, verbosity = 2)
 
   liveHead <- dimSums(fao, dim = "ElementShort")
