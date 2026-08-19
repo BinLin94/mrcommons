@@ -13,6 +13,62 @@
 #' calcOutput("AnimalStocks")
 #' }
 #'
+#' @importFrom stats approx
+
+## FAO's "stock" (census) elements have year-specific reporting gaps that read as a
+## literal 0 even for large, active producers (e.g. DEU/ESP chicken stock is 0 in
+## several years since 2018, while chicken meat production and slaughter counts stay
+## normal throughout - a census gap, not a real population change). For the five
+## categories derived by subtraction below ("other X = total stock - dairy/laying X"),
+## an unfilled gap sends that subtraction negative and the generic negative-value
+## cleanup then wrongly zeroes out a real subcategory instead of just the corrupted
+## residual. For the three categories used directly (swine, horses, ducks - no
+## subtraction), the same gap just silently reads 0, with no negative value to flag it.
+## Both cases are the same underlying data problem, so all eight stock totals are
+## gap-filled here before use:
+##  - sandwiched (real values on both sides): linearly interpolated outright, since both
+##    endpoints are hard evidence the population didn't hit zero in between.
+##  - leading/trailing (run to the start/end of the series): only filled if the paired
+##    meat production/slaughter series is non-zero somewhere in the gap - evidence the
+##    population is still there and it's the stock census specifically that's missing.
+##    Otherwise left as 0 (e.g. IRN pig stock 1981-2024, where production and slaughter
+##    drop to 0 in the same year and never recover - a genuine, permanent stop, not a
+##    reporting gap).
+toolFillStockGaps <- function(stock, production) {
+  stockArr <- as.array(collapseNames(stock))[, , 1]
+  prodArr  <- as.array(collapseNames(production))[, , 1]
+  yrs      <- as.integer(gsub("^y", "", colnames(stockArr)))
+
+  for (i in seq_len(nrow(stockArr))) {
+    v <- stockArr[i, ]
+    isZero <- v == 0
+    if (!any(isZero) || all(isZero)) next # no gap, or never had any stock at all
+    p <- prodArr[i, ]
+    r <- rle(isZero)
+    ends   <- cumsum(r$lengths)
+    starts <- ends - r$lengths + 1
+    for (k in seq_along(r$lengths)) {
+      if (!r$values[k]) next
+      s <- starts[k]; e <- ends[k]
+      if (s > 1 && e < length(v)) {
+        # sandwiched: real values on both sides
+        v[s:e] <- approx(x = c(yrs[s - 1], yrs[e + 1]), y = c(v[s - 1], v[e + 1]), xout = yrs[s:e])$y
+      } else if (e == length(v)) {
+        # trailing
+        if (any(p[s:e] > 0, na.rm = TRUE)) v[s:e] <- v[s - 1]
+      } else if (s == 1) {
+        # leading
+        if (any(p[s:e] > 0, na.rm = TRUE)) v[s:e] <- v[e + 1]
+      }
+    }
+    stockArr[i, ] <- v
+  }
+
+  out <- collapseNames(stock)
+  out[, , ] <- as.numeric(stockArr)
+  out
+}
+
 calcAnimalStocks <- function(grouping = "IPCC") {
   if (grouping != "IPCC") {
     stop("so far only IPCC categories implemented.")
@@ -26,6 +82,28 @@ calcAnimalStocks <- function(grouping = "IPCC") {
   fao      <- readSource("FAO_online", "LiveHead2024")
   liveHead <- dimSums(fao, dim = "ElementShort")
 
+  # gap-filled versions of the raw stock totals feeding the subtractions below -
+  # see toolFillStockGaps() above for why this is needed
+  cattleStock  <- toolFillStockGaps(liveHead[, , "866|Cattle"],
+                                    fao[, , "867|Meat of cattle with the bone, fresh or chilled.Production_(t)"])
+  buffaloStock <- toolFillStockGaps(liveHead[, , "946|Buffalo"],
+                                    fao[, , "947|Meat of buffalo, fresh or chilled.Production_(t)"])
+  sheepStock   <- toolFillStockGaps(liveHead[, , "976|Sheep"],
+                                    fao[, , "977|Meat of sheep, fresh or chilled.Production_(t)"])
+  goatStock    <- toolFillStockGaps(liveHead[, , "1016|Goats"],
+                                    fao[, , "1017|Meat of goat, fresh or chilled.Production_(t)"])
+  chickenStock <- toolFillStockGaps(dimSums(liveHead[, , c("1057|Chickens", "1083|Other birds")], dim = 3.1),
+                                    fao[, , "1058|Meat of chickens, fresh or chilled.Production_(t)"])
+  # these three are used directly (no subtraction), so a stock gap never goes negative
+  # and the cleanup at the end of this function never flags it - it just silently reads
+  # 0. Gap-filled here too so the underlying data quality issue is fixed the same way.
+  swineStock   <- toolFillStockGaps(liveHead[, , "1034|Swine / pigs"],
+                                    fao[, , "1035|Meat of pig with the bone, fresh or chilled.Production_(t)"])
+  horseStock   <- toolFillStockGaps(liveHead[, , "1096|Horses"],
+                                    fao[, , "1097|Horse meat, fresh or chilled.Production_(t)"])
+  duckStock    <- toolFillStockGaps(liveHead[, , "1068|Ducks"],
+                                    fao[, , "1069|Meat of ducks, fresh or chilled.Production_(t)"])
+
   # estimate numbers of animals for IPCC categories
   animals <- NULL
 
@@ -34,7 +112,7 @@ calcAnimalStocks <- function(grouping = "IPCC") {
     collapseNames(fao[, , "882|Raw milk of cattle.Milk_Animals_(An)"]), "dairy cows"))
   # Other cattle
   animals <- mbind(animals, setNames(
-    collapseNames(liveHead[, , "866|Cattle"])
+    cattleStock
     - setNames(animals[, , "dairy cows"], NULL),
     "other cattle"
   ))
@@ -44,18 +122,18 @@ calcAnimalStocks <- function(grouping = "IPCC") {
     collapseNames(fao[, , "951|Raw milk of buffalo.Milk_Animals_(An)"]), "dairy buffalo"))
   # Other buffalo
   animals <- mbind(animals, setNames(
-    collapseNames(liveHead[, , "946|Buffalo"])
+    buffaloStock
     - setNames(animals[, , "dairy buffalo"], NULL), "other buffalo"))
 
   # Market Swine
   animals <- mbind(animals, setNames(
-    collapseNames(liveHead[, , "1034|Swine / pigs"]) * marketSwineShare,
+    swineStock * marketSwineShare,
     "market swine"
   ))
 
   # Breeding Swine
   animals <- mbind(animals, setNames(
-    collapseNames(liveHead[, , "1034|Swine / pigs"]) * (1 - marketSwineShare),
+    swineStock * (1 - marketSwineShare),
     "breeding swine"
   ))
 
@@ -64,7 +142,7 @@ calcAnimalStocks <- function(grouping = "IPCC") {
     collapseNames(fao[, , "982|Raw milk of sheep.Milk_Animals_(An)"]), "dairy sheep"))
   # Other sheep
   animals <- mbind(animals, setNames(
-    collapseNames(liveHead[, , "976|Sheep"])
+    sheepStock
     - setNames(animals[, , "dairy sheep"], NULL),
     "other sheep"
   ))
@@ -74,7 +152,7 @@ calcAnimalStocks <- function(grouping = "IPCC") {
     collapseNames(fao[, , "1020|Raw milk of goats.Milk_Animals_(An)"]), "dairy goats"))
   # Other goats
   animals <- mbind(animals, setNames(
-    collapseNames(liveHead[, , "1016|Goats"])
+    goatStock
     - setNames(animals[, , "dairy goats"], NULL),
     "other goats"
   ))
@@ -91,7 +169,7 @@ calcAnimalStocks <- function(grouping = "IPCC") {
 
   # Horses
   animals <- mbind(animals, setNames(
-    collapseNames(liveHead[, , "1096|Horses"]),
+    horseStock,
     "horses"
   ))
 
@@ -108,7 +186,7 @@ calcAnimalStocks <- function(grouping = "IPCC") {
     "poultry layers"))
   # Broilers
   animals <- mbind(animals, setNames(
-    dimSums(liveHead[, , c("1057|Chickens", "1083|Other birds")], dim = 3.1)
+    chickenStock
     - setNames(animals[, , "poultry layers"], NULL),
     "broilers"
   ))
@@ -121,7 +199,7 @@ calcAnimalStocks <- function(grouping = "IPCC") {
 
   # Ducks
   animals <- mbind(animals, setNames(
-    collapseNames(liveHead[, , "1068|Ducks"]),
+    duckStock,
     "ducks"
   ))
 
