@@ -132,7 +132,28 @@ calcAnimalStocks <- function(grouping = "IPCC") {
                       "Yield_(100_g)")
   relativeDelete <- relativeDelete[relativeDelete %in% getItems(fao, dim = 3.2)]
   if (length(relativeDelete) > 0) fao <- fao[, , relativeDelete, invert = TRUE]
-  fao <- toolISOhistorical(fao, overwrite = TRUE)
+
+  # convert = "onlycorrect" skips convertFAO_online() entirely, which also skips its
+  # handling of historical/composite FAO country codes (XET/XBL/XSD/XCN) that aren't in
+  # madrat's default ISOhistorical mapping. Without this, toolCountryFill just drops them
+  # as unknown codes - silently losing real data (e.g. Ethiopia's pre-1992 cattle stock is
+  # entirely reported under "XET", not "ETH") instead of splitting/renaming it correctly.
+  additionalMapping <- list()
+  if (all(c("XET", "ETH", "ERI") %in% getItems(fao, dim = 1.1))) {
+    additionalMapping <- append(additionalMapping, list(c("XET", "ETH", "y1992"), c("XET", "ERI", "y1992")))
+  }
+  if (all(c("XBL", "BEL", "LUX") %in% getItems(fao, dim = 1.1))) {
+    additionalMapping <- append(additionalMapping, list(c("XBL", "BEL", "y1999"), c("XBL", "LUX", "y1999")))
+  }
+  if (all(c("XSD", "SSD", "SDN") %in% getItems(fao, dim = 1.1))) {
+    additionalMapping <- append(additionalMapping, list(c("XSD", "SSD", "y2011"), c("XSD", "SDN", "y2011")))
+  }
+  if ("XCN" %in% getItems(fao, dim = 1.1)) {
+    if ("CHN" %in% getItems(fao, dim = 1.1)) fao <- fao["CHN", , , invert = TRUE]
+    getItems(fao, dim = 1)[getItems(fao, dim = 1) == "XCN"] <- "CHN"
+  }
+
+  fao <- toolISOhistorical(fao, overwrite = TRUE, additional_mapping = additionalMapping)
   fao <- toolCountryFill(fao, fill = NA, verbosity = 2)
 
   liveHead <- dimSums(fao, dim = "ElementShort")
