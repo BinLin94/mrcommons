@@ -71,11 +71,24 @@ toolFillStockGaps <- function(stock, production) {
         # sandwiched: real values on both sides
         v[s:e] <- approx(x = c(yrs[s - 1], yrs[e + 1]), y = c(v[s - 1], v[e + 1]), xout = yrs[s:e])$y
       } else if (e == length(v)) {
-        # trailing
-        if (any(p[s:e] > 0, na.rm = TRUE) || (e - s + 1) == 1) v[s:e] <- v[s - 1]
+        # trailing: a single-year gap is filled outright (see file header); a longer gap
+        # is filled only in the specific years with direct production evidence, not the
+        # whole span from one supporting year - otherwise one positive-production year
+        # anywhere in a decade-plus gap would flat-line the entire gap to a single value
+        if ((e - s + 1) == 1) {
+          v[s:e] <- v[s - 1]
+        } else {
+          supported <- !is.na(p[s:e]) & p[s:e] > 0
+          v[s:e][supported] <- v[s - 1]
+        }
       } else if (s == 1) {
-        # leading
-        if (any(p[s:e] > 0, na.rm = TRUE) || (e - s + 1) == 1) v[s:e] <- v[e + 1]
+        # leading: same logic as trailing, mirrored
+        if ((e - s + 1) == 1) {
+          v[s:e] <- v[e + 1]
+        } else {
+          supported <- !is.na(p[s:e]) & p[s:e] > 0
+          v[s:e][supported] <- v[e + 1]
+        }
       }
     }
     stockArr[i, ] <- v
@@ -202,6 +215,56 @@ calcAnimalStocks <- function(grouping = "IPCC") {
                             "1091|Eggs from other birds in shell, fresh, nec.Laying_(An)"), dim = 3),
     toolCombineItems(fao, c("1062|Hen eggs in shell, fresh.Production_(t)",
                             "1091|Eggs from other birds in shell, fresh, nec.Production_(t)"), dim = 3))
+
+  # Externally-sourced corrections for specific country/category gaps that toolFillStockGaps()
+  # leaves unresolved (no in-dataset production evidence) but a national statistics office
+  # publishes a directly comparable (same species, same country, same unit) figure - found by
+  # manually researching each of the ~39 country/category combinations still unresolved after
+  # the fixes above. Deliberately narrow: only applied where a specific number was found and
+  # cross-checked against an external source; only touches years still at the toolFillStockGaps
+  # default of 0, never overwrites a year already resolved from FAO's own data. Countries/species
+  # with only indirect ("the industry still exists, scale unconfirmed") evidence, or where the
+  # external evidence was itself ambiguous (e.g. Palestine, where the gap coincides with the Gaza
+  # war and FAO's PSE code combines Gaza with the still-reporting West Bank), are deliberately
+  # left at the 0 default rather than guessed at. Full verification trail (including the entries
+  # deliberately left unfilled) in the project's gap-audit record.
+  applyExternalFill <- function(x, iso, years, value) {
+    yrCols <- paste0("y", years)
+    cur <- x[iso, yrCols, ]
+    stillUnresolved <- as.numeric(cur) == 0
+    cur[stillUnresolved] <- value
+    x[iso, yrCols, ] <- cur
+    x
+  }
+
+  # poultry layers (DPo)
+  layerStock <- applyExternalFill(layerStock, "BGR", 2021:2024, 4392000) # Bulgaria Ministry of Agriculture and Food, 2024
+  layerStock <- applyExternalFill(layerStock, "GLP", 2007:2024, 220155)  # DAAF Guadeloupe RA2020, 2020
+  layerStock <- applyExternalFill(layerStock, "GUF", 2007:2024, 72000)   # DAAF Guyane Memento 2017, 2016
+  layerStock <- applyExternalFill(layerStock, "IRL", 2021:2024, 3100000) # Eurostat egg-laying-hen statistics, 2022 (likely a slight
+                                                                          # underestimate given IE's growing production trend since)
+  layerStock <- applyExternalFill(layerStock, "MTQ", 2007:2024, 95000)   # last FAO value (2006) held constant - low confidence,
+                                                                          # Agreste Martinique census notes an ongoing decline
+  layerStock <- applyExternalFill(layerStock, "REU", 2007:2024, 508000)  # last FAO value (2006) held constant - medium confidence
+
+  # ducks (Dk) - main species total, not a dairy/laying sub-population
+  duckStock <- applyExternalFill(duckStock, "GUF", 2007:2024, 4700)   # DAAF Guyane Memento 2017, 2015 (700 canards a gaver +
+                                                                        # 4,000 canards a rotir); last FAO value (30,000) was ~6x too high
+  duckStock <- applyExternalFill(duckStock, "IRL", 2021:2024, 434000) # last FAO value (2020) held constant
+  duckStock <- applyExternalFill(duckStock, "MTQ", 2002:2024, 590000) # last FAO value (2001) held constant - low confidence, decades old
+  duckStock <- applyExternalFill(duckStock, "REU", 2007:2024, 520000) # last FAO value (2006) held constant
+
+  # dairy cows (DCt)
+  dairyCowsStock <- applyExternalFill(dairyCowsStock, "MTQ", 2007:2024, 96)    # DAAF Martinique Memento 2016, 2015;
+                                                                                 # last FAO value (2,565, 2006) was ~27x too high
+  dairyCowsStock <- applyExternalFill(dairyCowsStock, "REU", 2007:2024, 27280) # last FAO value (2006) held constant
+
+  # dairy buffalo (DBf)
+  dairyBufStock <- applyExternalFill(dairyBufStock, "ALB", 2020:2024, 29)    # last FAO value (2019) held constant; negligibly small
+  dairyBufStock <- applyExternalFill(dairyBufStock, "PHL", 1991:2024, 30151) # Philippine Statistics Authority Dairy Situation Report,
+                                                                               # 2023 - real growth since the 1990 baseline (8,000), so this
+                                                                               # flat fill understates the 1990s-2000s and likely
+                                                                               # overstates the 1991-1992 transition years slightly
 
   # estimate numbers of animals for IPCC categories
   animals <- NULL
