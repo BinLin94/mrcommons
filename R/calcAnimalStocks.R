@@ -46,11 +46,18 @@
 ##    only periodically rather than annually (e.g. ITA poultry layers has recurring 1-2
 ##    year gaps in otherwise-stable years), so one missing year right at the current edge
 ##    of the data is far more likely to be "not published yet" than an instantaneous
-##    change; longer gaps still require production evidence. Real zeros (like IRN pig
-##    stock) never enter this function as a gap at all, since they are not NA.
-##    Any gap still unresolved after this (no production evidence, longer than a single
-##    year) is left as 0, e.g. IRN-style genuine, permanent stops would look the same if
-##    they were ever reported as NA instead of a real 0.
+##    change. Real zeros (like IRN pig stock) never enter this function as a gap at all,
+##    since they are not NA.
+##    Any gap still unresolved after this (no production evidence at all) is left as 0,
+##    e.g. IRN-style genuine, permanent stops would look the same if they were ever
+##    reported as NA instead of a real 0.
+##
+## A dairy/laying sub-population can also be genuinely 0 in a given year while its species
+## total is a real positive value, with no within-series evidence to fill the
+## sub-population itself (no sandwich, no matching milk/egg production in reach).
+## toolImputeSubShare() below closes this case using that same country's own most recent
+## real dairy/laying share (never another country's), clamped to [0, total] - see its own
+## header for details.
 toolFillStockGaps <- function(stock, production) {
   stockArr <- as.array(collapseNames(stock))[, , 1]
   prodArr  <- as.array(collapseNames(production))[, , 1]
@@ -68,35 +75,61 @@ toolFillStockGaps <- function(stock, production) {
       if (!r$values[k]) next
       s <- starts[k]; e <- ends[k]
       if (s > 1 && e < length(v)) {
-        # sandwiched: real values on both sides
+        # sandwiched: real values on both sides, no evidence or distance limit needed
         v[s:e] <- approx(x = c(yrs[s - 1], yrs[e + 1]), y = c(v[s - 1], v[e + 1]), xout = yrs[s:e])$y
-      } else if (e == length(v)) {
-        # trailing: a single-year gap is filled outright (see file header); a longer gap
-        # is filled only in the specific years with direct production evidence, not the
-        # whole span from one supporting year - otherwise one positive-production year
-        # anywhere in a decade-plus gap would flat-line the entire gap to a single value
-        if ((e - s + 1) == 1) {
-          v[s:e] <- v[s - 1]
-        } else {
-          supported <- !is.na(p[s:e]) & p[s:e] > 0
-          v[s:e][supported] <- v[s - 1]
-        }
-      } else if (s == 1) {
-        # leading: same logic as trailing, mirrored
-        if ((e - s + 1) == 1) {
-          v[s:e] <- v[e + 1]
-        } else {
-          supported <- !is.na(p[s:e]) & p[s:e] > 0
-          v[s:e][supported] <- v[e + 1]
-        }
+      } else if (e == length(v) || s == 1) {
+        # trailing/leading: single-year gaps fill outright; longer gaps need production
+        # evidence in each year
+        trailing <- e == length(v)
+        anchor   <- if (trailing) v[s - 1] else v[e + 1]
+        supported <- (e - s + 1 == 1) | (!is.na(p[s:e]) & p[s:e] > 0)
+        v[s:e][supported] <- anchor
       }
     }
     stockArr[i, ] <- v
   }
-  stockArr[is.na(stockArr)] <- 0 # any gap left unresolved (no evidence, longer than 1yr)
+  stockArr[is.na(stockArr)] <- 0 # any gap left unresolved (no evidence) -> 0
 
   out <- collapseNames(stock)
   out[, , ] <- as.numeric(stockArr)
+  out
+}
+
+## Impute a missing dairy/laying sub-population as (this country's most recent real
+## dairy/laying share, last observation carried forward) x this year's total, clamped to
+## [0, total] - never another country's share or a global average.
+##
+## `subRaw` (the sub-population as read from FAO, before toolFillStockGaps() ran) is
+## required: the share anchor must be a real observation, not an estimate, and a real
+## reported 0 (subRaw == 0) must never be overwritten - only a genuine gap (subRaw NA,
+## still 0 in `sub`) is eligible.
+toolImputeSubShare <- function(sub, total, subRaw) {
+  subArr    <- as.array(collapseNames(sub))[, , 1]
+  totalArr  <- as.array(collapseNames(total))[, , 1]
+  subRawArr <- as.array(collapseNames(subRaw))[, , 1]
+
+  for (i in seq_len(nrow(subArr))) {
+    t   <- totalArr[i, ]
+    raw <- subRawArr[i, ]
+    # share anchor: only real, raw FAO observations count as evidence, never a value
+    # toolFillStockGaps() already estimated (see header)
+    validShare <- !is.na(raw) & raw > 0 & !is.na(t) & t > 0
+    if (!any(validShare)) next # no real share evidence for this country/category at all
+    shareSeries <- ifelse(validShare, raw / t, NA)
+    # eligible only where the raw FAO reading was genuinely NA (not a real 0) and
+    # toolFillStockGaps() still left it at 0 (no in-reach evidence to resolve it either)
+    gap <- is.na(raw) & !is.na(t) & subArr[i, ] == 0 & t > 0
+    if (!any(gap)) next
+
+    for (yi in which(gap)) {
+      priorValid <- which(validShare[seq_len(yi)])
+      if (length(priorValid) == 0) next # no earlier real observation - leave unresolved
+      share <- shareSeries[max(priorValid)]
+      subArr[i, yi] <- min(max(share * t[yi], 0), t[yi])
+    }
+  }
+  out <- collapseNames(sub)
+  out[, , ] <- as.numeric(subArr)
   out
 }
 
@@ -167,9 +200,9 @@ calcAnimalStocks <- function(grouping = "IPCC") {
   }
 
   # toolISOhistorical() warns whenever the successor-country weight it looks up for some
-  # unrelated item/element happens to be NA in the split year - harmless (it falls back to
-  # weight 0 for just that item, same as it would with any other NA), but noisy now that we
-  # no longer zero all of fao's NAs beforehand. Silenced here; doesn't affect any values.
+  # unrelated item/element is NA in the split year - harmless (falls back to weight 0 for
+  # just that item), but noisy given how many real NAs this file's fao object carries.
+  # Silenced here; doesn't affect any values.
   fao <- suppressWarnings(toolISOhistorical(fao, overwrite = TRUE, additional_mapping = additionalMapping))
   fao <- toolCountryFill(fao, fill = NA, verbosity = 2)
 
@@ -197,24 +230,49 @@ calcAnimalStocks <- function(grouping = "IPCC") {
   duckStock    <- toolFillStockGaps(liveHead[, , "1068|Ducks"],
                                     fao[, , "1069|Meat of ducks, fresh or chilled.Production_(t)"])
 
+  # camels, turkey (geese+turkeys) and mules/asses each have a matching FAO meat-
+  # production series, combined on both sides with toolCombineItems() before gap-filling,
+  # same as chickenStock/layerStock below.
+  camelStock <- toolFillStockGaps(
+    toolCombineItems(liveHead, c("1126|Camels", "1157|Other camelids"), dim = 3.1),
+    toolCombineItems(fao, c("1127|Meat of camels, fresh or chilled.Production_(t)",
+                            "1158|Meat of other domestic camelids, fresh or chilled.Production_(t)"), dim = 3))
+  turkeyStock <- toolFillStockGaps(
+    toolCombineItems(liveHead, c("1072|Geese", "1079|Turkeys"), dim = 3.1),
+    toolCombineItems(fao, c("1073|Meat of geese, fresh or chilled.Production_(t)",
+                            "1080|Meat of turkeys, fresh or chilled.Production_(t)"), dim = 3))
+  muleAssStock <- toolFillStockGaps(
+    toolCombineItems(liveHead, c("1107|Asses", "1110|Mules and hinnies"), dim = 3.1),
+    toolCombineItems(fao, c("1108|Meat of asses, fresh or chilled.Production_(t)",
+                            "1111|Meat of mules, fresh or chilled.Production_(t)"), dim = 3))
+
   # dairy/laying sub-population series (used below to split each species' total stock
-  # into dairy-or-layer vs other/broiler) have the same year-specific reporting gaps as
-  # the total stocks above - gap-filled the same way, paired against milk/egg production
-  # rather than meat production, since that is the flow variable that actually tracks
-  # with these sub-populations
-  dairyCowsStock  <- toolFillStockGaps(fao[, , "882|Raw milk of cattle.Milk_Animals_(An)"],
-                                       fao[, , "882|Raw milk of cattle.Production_(t)"])
-  dairyBufStock   <- toolFillStockGaps(fao[, , "951|Raw milk of buffalo.Milk_Animals_(An)"],
-                                       fao[, , "951|Raw milk of buffalo.Production_(t)"])
-  dairySheepStock <- toolFillStockGaps(fao[, , "982|Raw milk of sheep.Milk_Animals_(An)"],
-                                       fao[, , "982|Raw milk of sheep.Production_(t)"])
-  dairyGoatStock  <- toolFillStockGaps(fao[, , "1020|Raw milk of goats.Milk_Animals_(An)"],
-                                       fao[, , "1020|Raw milk of goats.Production_(t)"])
+  # into dairy-or-layer vs other/broiler), gap-filled against milk/egg production rather
+  # than meat production. Raw (pre-fill) copies are kept for toolImputeSubShare() below.
+  dairyCowsRaw    <- fao[, , "882|Raw milk of cattle.Milk_Animals_(An)"]
+  dairyCowsStock  <- toolFillStockGaps(dairyCowsRaw, fao[, , "882|Raw milk of cattle.Production_(t)"])
+  dairyBufRaw     <- fao[, , "951|Raw milk of buffalo.Milk_Animals_(An)"]
+  dairyBufStock   <- toolFillStockGaps(dairyBufRaw, fao[, , "951|Raw milk of buffalo.Production_(t)"])
+  dairySheepRaw   <- fao[, , "982|Raw milk of sheep.Milk_Animals_(An)"]
+  dairySheepStock <- toolFillStockGaps(dairySheepRaw, fao[, , "982|Raw milk of sheep.Production_(t)"])
+  dairyGoatRaw    <- fao[, , "1020|Raw milk of goats.Milk_Animals_(An)"]
+  dairyGoatStock  <- toolFillStockGaps(dairyGoatRaw, fao[, , "1020|Raw milk of goats.Production_(t)"])
+  layerRaw        <- toolCombineItems(fao, c("1062|Hen eggs in shell, fresh.Laying_(An)",
+                                             "1091|Eggs from other birds in shell, fresh, nec.Laying_(An)"), dim = 3)
   layerStock      <- toolFillStockGaps(
-    toolCombineItems(fao, c("1062|Hen eggs in shell, fresh.Laying_(An)",
-                            "1091|Eggs from other birds in shell, fresh, nec.Laying_(An)"), dim = 3),
+    layerRaw,
     toolCombineItems(fao, c("1062|Hen eggs in shell, fresh.Production_(t)",
                             "1091|Eggs from other birds in shell, fresh, nec.Production_(t)"), dim = 3))
+  dairyCamelRaw   <- fao[, , "1130|Raw milk of camel.Milk_Animals_(An)"]
+  dairyCamelStock <- toolFillStockGaps(dairyCamelRaw, fao[, , "1130|Raw milk of camel.Production_(t)"])
+
+  # see toolImputeSubShare() header
+  dairyCowsStock  <- toolImputeSubShare(dairyCowsStock, cattleStock, dairyCowsRaw)
+  dairyBufStock   <- toolImputeSubShare(dairyBufStock, buffaloStock, dairyBufRaw)
+  dairySheepStock <- toolImputeSubShare(dairySheepStock, sheepStock, dairySheepRaw)
+  dairyGoatStock  <- toolImputeSubShare(dairyGoatStock, goatStock, dairyGoatRaw)
+  layerStock      <- toolImputeSubShare(layerStock, chickenStock, layerRaw)
+  dairyCamelStock <- toolImputeSubShare(dairyCamelStock, camelStock, dairyCamelRaw)
 
   # Externally-sourced corrections for specific country/category gaps that toolFillStockGaps()
   # leaves unresolved (no in-dataset production evidence) but a national statistics office
@@ -321,10 +379,10 @@ calcAnimalStocks <- function(grouping = "IPCC") {
 
   # Dairy Camels
   animals <- mbind(animals, setNames(
-    collapseNames(fao[, , "1130|Raw milk of camel.Milk_Animals_(An)"]), "dairy camels"))
+    collapseNames(dairyCamelStock), "dairy camels"))
   # Other Camelids
   animals <- mbind(animals, setNames(
-    toolCombineItems(liveHead, c("1126|Camels", "1157|Other camelids"), dim = 3.1)
+    camelStock
     - setNames(animals[, , "dairy camels"], NULL),
     "other camels"
   ))
@@ -337,7 +395,7 @@ calcAnimalStocks <- function(grouping = "IPCC") {
 
   # Mules and Asses
   animals <- mbind(animals, setNames(
-    toolCombineItems(liveHead, c("1107|Asses", "1110|Mules and hinnies"), dim = 3.1),
+    muleAssStock,
     "mules and asses"
   ))
 
@@ -354,7 +412,7 @@ calcAnimalStocks <- function(grouping = "IPCC") {
 
   # Turkey
   animals <- mbind(animals, setNames(
-    toolCombineItems(liveHead, c("1072|Geese", "1079|Turkeys"), dim = 3.1),
+    turkeyStock,
     "turkey"
   ))
 
@@ -370,10 +428,10 @@ calcAnimalStocks <- function(grouping = "IPCC") {
 
   # sort according to n_rate animal categories
 
-  # categories not routed through toolFillStockGaps() (camels, turkey, mules/asses) keep
-  # whatever NA survived toolCountryFill(fill = NA) - e.g. countries FAO never tracked
-  # for that item at all. Clean up here rather than upstream, since upstream still needs
-  # the NA/real-zero distinction.
+  # any NA remaining here is a country FAO never tracked for that item at all (dropped by
+  # toolCountryFill(fill = NA) at read-in), not a within-series gap - toolFillStockGaps()
+  # and toolImputeSubShare() already handled those. Cleaned up here rather than upstream,
+  # since upstream still needs the NA/real-zero distinction.
   animals[is.na(animals)] <- 0
 
   # remove all negative values
