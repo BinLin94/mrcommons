@@ -182,6 +182,13 @@ calcAnimalStocks <- function(grouping = "IPCC") {
   # overstates the 1991-1992 transition years slightly
   dairyBufStock <- applyExternalFill(dairyBufStock, "PHL", 1991:2024, 30151)
 
+  dairyCowsStock  <- toolClampToTotal(dairyCowsStock,  cattleStock,  "dairy cows")
+  dairyBufStock   <- toolClampToTotal(dairyBufStock,   buffaloStock, "dairy buffalo")
+  dairySheepStock <- toolClampToTotal(dairySheepStock, sheepStock,   "dairy sheep")
+  dairyGoatStock  <- toolClampToTotal(dairyGoatStock,  goatStock,    "dairy goats")
+  layerStock      <- toolClampToTotal(layerStock,      chickenStock, "poultry layers")
+  dairyCamelStock <- toolClampToTotal(dairyCamelStock, camelStock,   "dairy camels")
+
   # estimate numbers of animals for IPCC categories
   animals <- NULL
 
