@@ -20,8 +20,8 @@ calcAnimalStocks <- function(grouping = "IPCC") {
 
   marketSwineShare <- 0.9 # table 10.19
 
-  # FAO merged LiveHead/LivePrim into Production_Crops_Livestock in 2024; LiveHead2024 reads
-  # the new file (item names like "882|Raw milk of cattle", elements "Milk_Animals_(An)").
+  # LiveHead2024 is FAOSTAT QCL: CPC-based item names (e.g. "882|Raw milk of cattle") and
+  # dairy animals as element "Milk_Animals_(An)".
   # Read with convert = "onlycorrect" and replicate convertFAO_online's remaining steps with
   # fill = NA instead of fill = 0, so toolFillStockGaps() can tell genuine gaps from real
   # zeros; any NA still left after gap-filling is cleaned to 0 before the return() below.
@@ -29,7 +29,8 @@ calcAnimalStocks <- function(grouping = "IPCC") {
   relativeDelete <- c("Yield_(100_g/ha)", "Yield_Carcass_Weight_(Hg/An)", "Yield_(100mg/An)",
                       "Yield_(No/An)", "Yield_(100_mg/An)", "Yield_(100_g/An)",
                       "Yield_Carcass_Weight_(100_g/An)", "Yield_Carcass_Weight_(0_1_g/An)",
-                      "Yield_(100_g)")
+                      "Yield_(100_g)", "Yield_(kg/ha)", "Yield_Carcass_Weight_(g/An)",
+                      "Yield_Carcass_Weight_(kg/An)")
   relativeDelete <- relativeDelete[relativeDelete %in% getItems(fao, dim = 3.2)]
   if (length(relativeDelete) > 0) fao <- fao[, , relativeDelete, invert = TRUE]
 
