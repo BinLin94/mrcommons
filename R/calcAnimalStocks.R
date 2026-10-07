@@ -34,11 +34,11 @@ calcAnimalStocks <- function(grouping = "IPCC") {
   relativeDelete <- relativeDelete[relativeDelete %in% getItems(fao, dim = 3.2)]
   if (length(relativeDelete) > 0) fao <- fao[, , relativeDelete, invert = TRUE]
 
-  # convert = "onlycorrect" skips convertFAO_online() entirely, which also skips its
-  # handling of historical/composite FAO country codes (XET/XBL/XSD/XCN) that aren't in
-  # madrat's default ISOhistorical mapping. Without this, toolCountryFill just drops them
-  # as unknown codes - silently losing real data (e.g. Ethiopia's pre-1992 cattle stock is
-  # entirely reported under "XET", not "ETH") instead of splitting/renaming it correctly.
+  # convert = "onlycorrect" skips convertFAO_online(), so its country handling is repeated
+  # here: the former countries XET (Ethiopia PDR), XBL (Belgium-Luxembourg) and XSD (Sudan
+  # former) are split to their successors, and XCN (China, mainland) replaces FAO's China
+  # total, which also contains TWN, HKG and MAC. toolCountryFill() would otherwise drop these
+  # codes, e.g. Ethiopia's cattle stock before 1993, which FAO reports only under XET.
   additionalMapping <- list()
   if (all(c("XET", "ETH", "ERI") %in% getItems(fao, dim = 1.1))) {
     additionalMapping <- append(additionalMapping, list(c("XET", "ETH", "y1992"), c("XET", "ERI", "y1992")))
@@ -63,8 +63,7 @@ calcAnimalStocks <- function(grouping = "IPCC") {
 
   liveHead <- dimSums(fao, dim = "ElementShort")
 
-  # gap-filled versions of the raw stock totals feeding the subtractions below -
-  # see toolFillStockGaps() above for why this is needed
+  # gap-filled species totals; the dairy/laying sub-populations are subtracted from them below
   cattleStock  <- toolFillStockGaps(liveHead[, , "866|Cattle"],
                                     fao[, , "867|Meat of cattle with the bone, fresh or chilled.Production_(t)"])
   buffaloStock <- toolFillStockGaps(liveHead[, , "946|Buffalo"],
@@ -75,9 +74,7 @@ calcAnimalStocks <- function(grouping = "IPCC") {
                                     fao[, , "1017|Meat of goat, fresh or chilled.Production_(t)"])
   chickenStock <- toolFillStockGaps(toolCombineItems(liveHead, c("1057|Chickens", "1083|Other birds"), dim = 3.1),
                                     fao[, , "1058|Meat of chickens, fresh or chilled.Production_(t)"])
-  # these three are used directly (no subtraction), so a stock gap never goes negative
-  # and the cleanup at the end of this function never flags it - it just silently reads
-  # 0. Gap-filled here too so the underlying data quality issue is fixed the same way.
+  # species used directly as IPCC categories, without a subtraction
   swineStock   <- toolFillStockGaps(liveHead[, , "1034|Swine / pigs"],
                                     fao[, , "1035|Meat of pig with the bone, fresh or chilled.Production_(t)"])
   horseStock   <- toolFillStockGaps(liveHead[, , "1096|Horses"],
@@ -135,8 +132,7 @@ calcAnimalStocks <- function(grouping = "IPCC") {
   # Externally-sourced corrections for country/category gaps toolFillStockGaps() leaves at 0
   # (no in-dataset production evidence), using directly comparable national-statistics figures.
   # Narrow by design: only where a specific, cross-checked number was found, only for years
-  # still at 0, never overwriting FAO-resolved years; ambiguous cases are left at 0. Full
-  # verification trail is in the project's gap-audit record.
+  # still at 0, never overwriting FAO-resolved years; ambiguous cases are left at 0.
   applyExternalFill <- function(x, iso, years, value) {
     yrCols <- paste0("y", years)
     cur <- x[iso, yrCols, ]
@@ -296,8 +292,8 @@ calcAnimalStocks <- function(grouping = "IPCC") {
 
   # any NA remaining here is a country FAO never tracked for that item at all (dropped by
   # toolCountryFill(fill = NA) at read-in), not a within-series gap - toolFillStockGaps()
-  # and toolImputeSubShare() already handled those. Cleaned up here rather than upstream,
-  # since upstream still needs the NA/real-zero distinction.
+  # and toolImputeSubShare() already handled those. Cleaned up only here because the steps
+  # above need the NA/real-zero distinction.
   animals[is.na(animals)] <- 0
 
   # remove all negative values
